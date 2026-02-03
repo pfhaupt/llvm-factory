@@ -4,8 +4,6 @@ In the past I've encountered situations where I needed various LLVM versions for
 
 Often, the official releases aren't enough for my purposes (for example, on Windows you don't get `llvm-config`), so over time I created my own script for building and packaging LLVM.
 
-The original Makefile I used is added to this repo, however I have since then ported the script to C. This allows for more flexibility than Makefiles.
-
 ## Requirements
 - `git` to clone the LLVM repository
 - `cmake` to build LLVM
