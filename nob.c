@@ -1,3 +1,9 @@
+/*
+ * changes done to nob.h:
+ * - removed emotes from nob_cancer_log_handler (RIP Windows Terminal)
+ * - add silent version of nob_delete_file
+ * - add nob_delete_directory
+ */
 
 #define NOB_IMPLEMENTATION
 #include "nob.h"
@@ -5,10 +11,12 @@
 #define LLVM_VERSION (version)
 #define BUILD_MODE (build_mode)
 #define LINK_MODE (link_mode)
+#define PROJECTS (projects)
 #define SOURCE_DIR (temp_sprintf("./llvm-%s", LLVM_VERSION))
 #define BUILD_DIR (temp_sprintf("%s/build", SOURCE_DIR))
 #define INSTALL_DIR_NAME                                                       \
-    (temp_sprintf("llvm-%s-%s-%s", LLVM_VERSION, BUILD_MODE, LINK_MODE))
+    (temp_sprintf("%s-%s-%s-%s", pathify(PROJECTS), LLVM_VERSION, BUILD_MODE,  \
+                  LINK_MODE))
 #define INSTALL_DIR (temp_sprintf("./%s", INSTALL_DIR_NAME))
 #define ARCHIVE_NAME (temp_sprintf("%s.7z", INSTALL_DIR_NAME))
 
@@ -17,28 +25,54 @@
 #define CHK_LLVM (temp_sprintf("%s/chk_llvm", CHK_DIR))
 #define CHK_7ZIP (temp_sprintf("%s/chk_7zip", CHK_DIR))
 
-// Comment out this line to start the process.
-#define DRY_RUN
-
-// The script will compile these LLVM versions for you.
-const char *LLVM[] = {
-    "22.1.0-rc2",
-    "21.1.8",
-    "20.1.7",
-};
-
-// For each version, it will build the configurations specified here.
-const char *CONFIGS[] = {
-    "Release",
-};
-
-// For each configuration, create a dynamically or statically (or both) linked
-// build.
 typedef enum Link_Mode {
     LINK_STATIC = 0,
     LINK_DYNAMIC,
 } Link_Mode;
-Link_Mode MODES[] = {LINK_STATIC, LINK_DYNAMIC};
+
+typedef struct Config {
+    const char *version;
+    const char *build_mode;
+    Link_Mode link_mode;
+    const char *projects;
+    const char *targets;
+} Config;
+#define CONF(v, b, l, p, t)                                                    \
+    {.version = (v),                                                           \
+     .build_mode = (b),                                                        \
+     .link_mode = (l),                                                         \
+     .projects = (p),                                                          \
+     .targets = (t)}
+
+// Comment out this line to start the process.
+#define DRY_RUN
+
+// Choose the configurations that you want to build here.
+const Config CONFIGS[] = {
+    CONF("22.1.0-rc2", "Release", LINK_STATIC, "mlir;lldb;clang;lld", "host"),
+    CONF("22.1.0-rc2", "Release", LINK_DYNAMIC, "mlir;lldb;clang;lld", "host"),
+    CONF("21.1.8", "Release", LINK_STATIC, "mlir;lldb;clang;lld", "host"),
+    CONF("21.1.8", "Release", LINK_DYNAMIC, "mlir;lldb;clang;lld", "host"),
+    CONF("20.1.7", "Release", LINK_STATIC, "lldb;clang;lld", "host"),
+    CONF("20.1.7", "Release", LINK_DYNAMIC, "lldb;clang;lld", "host"),
+};
+
+const char *pathify(const char *projects) {
+    size_t len = strlen(projects);
+    if (len == 0) {
+        return "llvm";
+    }
+    char *_path = temp_alloc(len + 1);
+    assert(_path != NULL);
+    _path[len] = '\0';
+    memcpy(_path, projects, len);
+    for (size_t i = 0; i < len; i++) {
+        if (_path[i] == ';')
+            _path[i] = '-';
+    }
+    const char *path = temp_sprintf("llvm-%s", _path);
+    return path;
+}
 
 Cmd cmd = {0};
 
@@ -74,7 +108,8 @@ void touch_file(const char *path) {
 #endif
 }
 
-bool clone_repo(const char *version) {
+bool clone_repo(Config config) {
+    const char *version = config.version;
     if (file_exists(SOURCE_DIR)) {
         nob_log(NOB_INFO, "Directory %s exists, skipping git clone.",
                 SOURCE_DIR);
@@ -91,21 +126,40 @@ bool clone_repo(const char *version) {
     return _cmd_run(&cmd);
 }
 
-bool config_project(const char *version, const char *build_mode,
-                    Link_Mode mode) {
+bool config_project(Config config) {
+    const char *version = config.version;
+    const char *build_mode = config.build_mode;
+    Link_Mode mode = config.link_mode;
     const char *link_mode = get_link_mode(mode);
+    const char *projects = config.projects;
     if (file_exists(CHK_CONF)) {
         nob_log(NOB_INFO, "Check file %s exists, skipping configuration step.",
                 CHK_CONF);
         return true;
     }
+#ifndef DRY_RUN
+    if (file_exists(BUILD_DIR)) {
+        nob_log(NOB_WARNING, "Previous build directory %s exists. Deleting it.",
+                BUILD_DIR);
+        nob_log(NOB_INFO, "This may be because you're building the same LLVM "
+                          "version multiple times.");
+        if (!delete_directory(BUILD_DIR))
+            return false;
+    }
+#endif
     cmd_append(&cmd, "cmake", "-S", temp_sprintf("%s/llvm", SOURCE_DIR), "-B",
-               BUILD_DIR, "-G", "Ninja",
-               "-DLLVM_ENABLE_PROJECTS=mlir;lldb;clang;lld",
-               "-DLLVM_USE_LINKER=lld",
+               BUILD_DIR, "-G", "Ninja", "-DLLVM_USE_LINKER=lld",
                temp_sprintf("-DCMAKE_BUILD_TYPE=%s", BUILD_MODE),
                temp_sprintf("-DCMAKE_INSTALL_PREFIX=%s", INSTALL_DIR),
                "-DLLVM_CCACHE_BUILD=ON");
+    if (strlen(config.projects) > 0) {
+        cmd_append(&cmd,
+                   temp_sprintf("-DLLVM_ENABLE_PROJECTS=%s", config.projects));
+    }
+    if (strlen(config.targets) > 0) {
+        cmd_append(&cmd,
+                   temp_sprintf("-DLLVM_TARGETS_TO_BUILD=%s", config.targets));
+    }
 #ifdef _WIN32
     cmd_append(&cmd, "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded");
     cmd_append(
@@ -122,9 +176,12 @@ bool config_project(const char *version, const char *build_mode,
     return succ;
 }
 
-bool build_project(const char *version, const char *build_mode,
-                   Link_Mode mode) {
+bool build_project(Config config) {
+    const char *version = config.version;
+    const char *build_mode = config.build_mode;
+    Link_Mode mode = config.link_mode;
     const char *link_mode = get_link_mode(mode);
+    const char *projects = config.projects;
     if (file_exists(CHK_LLVM)) {
         nob_log(NOB_INFO, "Check file %s exists, skipping build step.",
                 CHK_LLVM);
@@ -138,9 +195,12 @@ bool build_project(const char *version, const char *build_mode,
     return succ;
 }
 
-bool archive_project(const char *version, const char *build_mode,
-                     Link_Mode mode) {
+bool archive_project(Config config) {
+    const char *version = config.version;
+    const char *build_mode = config.build_mode;
+    Link_Mode mode = config.link_mode;
     const char *link_mode = get_link_mode(mode);
+    const char *projects = config.projects;
     if (file_exists(CHK_7ZIP)) {
         nob_log(NOB_INFO, "Check file %s exists, skipping archiving step.",
                 CHK_7ZIP);
@@ -154,20 +214,23 @@ bool archive_project(const char *version, const char *build_mode,
     return succ;
 }
 
-bool build_llvm_toolchain(const char *version, const char *build_mode,
-                          Link_Mode mode) {
+bool build_llvm_toolchain(Config config) {
 #ifndef DRY_RUN
-    const char *link_mode = get_link_mode(mode);
+    const char *version = config.version;
+    const char *build_mode = config.build_mode;
+    Link_Mode mode = config.link_mode;
+    const char *link_mode = get_link_mode(config.link_mode);
+    const char *projects = config.projects;
     if (!mkdir_if_not_exists(CHK_DIR))
         return false;
 #endif
-    if (!clone_repo(version))
+    if (!clone_repo(config))
         return false;
-    if (!config_project(version, build_mode, mode))
+    if (!config_project(config))
         return false;
-    if (!build_project(version, build_mode, mode))
+    if (!build_project(config))
         return false;
-    if (!archive_project(version, build_mode, mode))
+    if (!archive_project(config))
         return false;
     return true;
 }
@@ -175,16 +238,9 @@ bool build_llvm_toolchain(const char *version, const char *build_mode,
 int main(int argc, char **argv) {
     GO_REBUILD_URSELF(argc, argv);
     set_log_handler(cancer_log_handler);
-    for (size_t i = 0; i < ARRAY_LEN(LLVM); i++) {
-        const char *version = LLVM[i];
-        for (size_t j = 0; j < ARRAY_LEN(CONFIGS); j++) {
-            const char *build_mode = CONFIGS[j];
-            for (size_t k = 0; k < ARRAY_LEN(MODES); k++) {
-                Link_Mode dynlib = MODES[k];
-                if (!build_llvm_toolchain(version, build_mode, dynlib))
-                    return false;
-            }
-        }
+    for (size_t i = 0; i < ARRAY_LEN(CONFIGS); i++) {
+        if (!build_llvm_toolchain(CONFIGS[i]))
+            return false;
     }
 #ifdef DRY_RUN
     nob_log(NOB_WARNING, "This was a dry run. No command has been executed.");
@@ -196,16 +252,15 @@ int main(int argc, char **argv) {
     nob_log(NOB_INFO, "Intermediate steps will be cached.");
     nob_log(NOB_INFO,
             "With your current settings, you will build %zu versions of LLVM:",
-            ARRAY_LEN(LLVM) * ARRAY_LEN(CONFIGS) * ARRAY_LEN(MODES));
-    for (size_t i = 0; i < ARRAY_LEN(LLVM); i++) {
-        const char *version = LLVM[i];
-        for (size_t j = 0; j < ARRAY_LEN(CONFIGS); j++) {
-            const char *build_mode = CONFIGS[j];
-            for (size_t k = 0; k < ARRAY_LEN(MODES); k++) {
-                const char *link_mode = get_link_mode(MODES[k]);
-                nob_log(NOB_INFO, "> %s", INSTALL_DIR_NAME);
-            }
-        }
+            ARRAY_LEN(CONFIGS));
+    for (size_t i = 0; i < ARRAY_LEN(CONFIGS); i++) {
+        Config config = CONFIGS[i];
+        const char *version = config.version;
+        const char *build_mode = config.build_mode;
+        Link_Mode mode = config.link_mode;
+        const char *link_mode = get_link_mode(config.link_mode);
+        const char *projects = config.projects;
+        nob_log(NOB_INFO, "> %s", INSTALL_DIR_NAME);
     }
 #endif
     return 0;

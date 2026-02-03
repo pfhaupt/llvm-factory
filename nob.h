@@ -257,7 +257,9 @@ NOBDEF bool nob_copy_directory_recursively(const char *src_path, const char *dst
 NOBDEF bool nob_read_entire_dir(const char *parent, Nob_File_Paths *children);
 NOBDEF bool nob_write_entire_file(const char *path, const void *data, size_t size);
 NOBDEF Nob_File_Type nob_get_file_type(const char *path);
+NOBDEF bool _nob_delete_file(const char *path, bool silent);
 NOBDEF bool nob_delete_file(const char *path);
+NOBDEF bool nob_delete_directory(const char *path);
 
 typedef enum {
     // If the current file is a directory go inside of it.
@@ -1882,13 +1884,13 @@ NOBDEF void nob_cancer_log_handler(Nob_Log_Level level, const char *fmt, va_list
 {
     switch (level) {
     case NOB_INFO:
-        fprintf(stderr, "ℹ️ \x1b[36m[INFO]\x1b[0m ");
+        fprintf(stderr, "\x1b[36m[INFO]\x1b[0m ");
         break;
     case NOB_WARNING:
-        fprintf(stderr, "⚠️ \x1b[33m[WARNING]\x1b[0m ");
+        fprintf(stderr, "\x1b[33m[WARNING]\x1b[0m ");
         break;
     case NOB_ERROR:
-        fprintf(stderr, "🚨 \x1b[31m[ERROR]\x1b[0m ");
+        fprintf(stderr, "\x1b[31m[ERROR]\x1b[0m ");
         break;
     case NOB_NO_LOGS: return;
     default:
@@ -2143,10 +2145,10 @@ NOBDEF Nob_File_Type nob_get_file_type(const char *path)
 #endif // _WIN32
 }
 
-NOBDEF bool nob_delete_file(const char *path)
+NOBDEF bool _nob_delete_file(const char *path, bool silent)
 {
 #ifndef NOB_NO_ECHO
-    nob_log(NOB_INFO, "deleting %s", path);
+    if (!silent) nob_log(NOB_INFO, "deleting %s", path);
 #endif // NOB_NO_ECHO
 #ifdef _WIN32
     Nob_File_Type type = nob_get_file_type(path);
@@ -2175,6 +2177,19 @@ NOBDEF bool nob_delete_file(const char *path)
     }
     return true;
 #endif // _WIN32
+}
+
+bool _nob_delete_directory_impl(Nob_Walk_Entry entry) {
+    return _nob_delete_file(entry.path, true);
+}
+
+NOBDEF bool nob_delete_directory(const char *path) {
+    return nob_walk_dir(path, _nob_delete_directory_impl, .post_order = true);
+}
+
+NOBDEF bool nob_delete_file(const char *path)
+{
+    return _nob_delete_file(path, false);
 }
 
 NOBDEF bool nob_copy_directory_recursively(const char *src_path, const char *dst_path)
@@ -2801,6 +2816,7 @@ NOBDEF char *nob_temp_running_executable_path(void)
         #define write_entire_file nob_write_entire_file
         #define get_file_type nob_get_file_type
         #define delete_file nob_delete_file
+        #define delete_directory nob_delete_directory
         #define Dir_Entry Nob_Dir_Entry
         #define dir_entry_open nob_dir_entry_open
         #define dir_entry_next nob_dir_entry_next
